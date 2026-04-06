@@ -1,0 +1,459 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+#  NAMESPACE
+# ════════════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ml-platform
+  labels:
+    app.kubernetes.io/name: ml-platform
+    app.kubernetes.io/part-of: gpu-inference-platform
+
+---
+# ════════════════════════════════════════════════════════════════════════════════
+#  REDIS – Deployment
+# ════════════════════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: ml-platform
+  labels:
+    app: redis
+    tier: cache
+    app.kubernetes.io/name: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+        tier: cache
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          args:
+            - redis-server
+            - --appendonly
+            - "yes"
+            - --maxmemory
+            - "512mb"
+            - --maxmemory-policy
+            - "allkeys-lru"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "768Mi"
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+      volumes:
+        - name: redis-data
+          persistentVolumeClaim:
+            claimName: redis-pvc
+
+---
+# ════════════════════════════════════════════════════════════════════════════════
+#  REDIS – Service
+# ════════════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: ml-platform
+  labels:
+    app: redis
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+
+---
+# ════════════════════════════════════════════════════════════════════════════════
+#  REDIS – PersistentVolumeClaim
+# ════════════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-pvc
+  namespace: ml-platform
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+
+---
+# ════════════════════════════════════════════════════════════════════════════════
+#  MODEL STORE – PersistentVolumeClaim (shared read-write-many)
+# ════════════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-store-pvc
+  namespace: ml-platform
+spec:
+  accessModes:
+    - ReadWriteMany          # Needed by model-service + inference-service
+  resources:
+    requests:
+      storage: 50Gi
+
+---
+# ════════════════════════════════════════════════════════════════════════════════
+#  MODEL SERVICE – Deployment
+# ════════════════════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: model-service
+  namespace: ml-platform
+  labels:
+    app: model-service
+    tier: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: model-service
+  template:
+    metadata:
+      labels:
+        app: model-service
+        tier: backend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8001"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: model-service
+          image: ml-platform/model-service:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8001
+          env:
+            - name: MODEL_STORE
+              value: /app/model_store
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: model-store
+              mountPath: /app/model_store
+      volumes:
+        - name: model-store
+          persistentVolumeClaim:
+            claimName: model-store-pvc
+
+---
+# ════════════════════════════════════════════════════════════════════════════════
+#  MODEL SERVICE – Service
+# ════════════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: Service
+metadata:
+  name: model-service
+  namespace: ml-platform
+  labels:
+    app: model-service
+spec:
+  selector:
+    app: model-service
+  ports:
+    - port: 8001
+      targetPort: 8001
+
+---
+# ════════════════════════════════════════════════════════════════════════════════
+#  GPU INFERENCE SERVICE – Deployment
+# ════════════════════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference-service
+  namespace: ml-platform
+  labels:
+    app: inference-service
+    tier: gpu
+spec:
+  replicas: 2                           # Scaled by HPA below
+  selector:
+    matchLabels:
+      app: inference-service
+  template:
+    metadata:
+      labels:
+        app: inference-service
+        tier: gpu
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8002"
+    spec:
+      # ── GPU node selection ──────────────────────────────────────────────────
+      nodeSelector:
+        accelerator: nvidia-gpu          # Label GPU nodes with this key
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+      containers:
+        - name: inference-service
+          image: ml-platform/inference-service:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8002
+          env:
+            - name: MODEL_STORE
+              value: /app/model_store
+            - name: MODEL_SERVICE_URL
+              value: http://model-service:8001
+            - name: REDIS_URL
+              value: redis://redis:6379
+            - name: BATCH_SIZE
+              value: "8"
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: "all"
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: "compute,utility"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "2Gi"
+              nvidia.com/gpu: "1"        # ← Request 1 GPU per pod
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+              nvidia.com/gpu: "1"        # ← Hard GPU limit
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8002
+            initialDelaySeconds: 45
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8002
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          volumeMounts:
+            - name: model-store
+              mountPath: /app/model_store
+      volumes:
+        - name: model-store
+          persistentVolumeClaim:
+            claimName: model-store-pvc
+      # Prevent pod co-location (one GPU-pod per node max)
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - inference-service
+                topologyKey: kubernetes.io/hostname
+
+---
+# ════════════════════════════════════════════════════════════════════════════════
+#  GPU INFERENCE SERVICE – Service
+# ════════════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: Service
+metadata:
+  name: inference-service
+  namespace: ml-platform
+  labels:
+    app: inference-service
+spec:
+  selector:
+    app: inference-service
+  ports:
+    - port: 8002
+      targetPort: 8002
+
+---
+# ════════════════════════════════════════════════════════════════════════════════
+#  API GATEWAY – Deployment
+# ════════════════════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  namespace: ml-platform
+  labels:
+    app: api-gateway
+    tier: frontend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: api-gateway
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+        tier: frontend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+    spec:
+      containers:
+        - name: api-gateway
+          image: ml-platform/api-gateway:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: MODEL_SERVICE_URL
+              value: http://model-service:8001
+            - name: INFERENCE_SERVICE_URL
+              value: http://inference-service:8002
+            - name: REDIS_URL
+              value: redis://redis:6379
+            - name: RATE_LIMIT_PER_MINUTE
+              value: "120"
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+---
+# ════════════════════════════════════════════════════════════════════════════════
+#  API GATEWAY – Service (LoadBalancer for external access)
+# ════════════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+  namespace: ml-platform
+  labels:
+    app: api-gateway
+spec:
+  type: LoadBalancer
+  selector:
+    app: api-gateway
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+      nodePort: 30080
+
+---
+# ════════════════════════════════════════════════════════════════════════════════
+#  FRONTEND – Deployment
+# ════════════════════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: ml-platform
+  labels:
+    app: frontend
+    tier: ui
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+        tier: ui
+    spec:
+      containers:
+        - name: frontend
+          image: ml-platform/frontend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 15
+
+---
+# ════════════════════════════════════════════════════════════════════════════════
+#  FRONTEND – Service
+# ════════════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: ml-platform
+spec:
+  type: LoadBalancer
+  selector:
+    app: frontend
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 30300

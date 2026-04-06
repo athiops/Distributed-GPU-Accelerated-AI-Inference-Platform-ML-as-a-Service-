@@ -1,0 +1,191 @@
+version: "3.9"
+
+# ── Networks ──────────────────────────────────────────────────────────────────
+networks:
+  ml-platform:
+    driver: bridge
+
+# ── Volumes ───────────────────────────────────────────────────────────────────
+volumes:
+  model-store:
+  redis-data:
+  prometheus-data:
+  grafana-data:
+
+# ── Services ──────────────────────────────────────────────────────────────────
+services:
+
+  # ── Redis (Task Queue + Result Cache) ──────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: ml-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    networks:
+      - ml-platform
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Model Management Service ────────────────────────────────────────────────
+  model-service:
+    build:
+      context: ./model-service
+      dockerfile: Dockerfile
+    container_name: ml-model-service
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    volumes:
+      - model-store:/app/model_store
+    environment:
+      - MODEL_STORE=/app/model_store
+    networks:
+      - ml-platform
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # ── GPU Inference Service ───────────────────────────────────────────────────
+  inference-service:
+    build:
+      context: ./inference-service
+      dockerfile: Dockerfile
+    container_name: ml-inference-service
+    restart: unless-stopped
+    ports:
+      - "8002:8002"
+    volumes:
+      - model-store:/app/model_store
+    environment:
+      - MODEL_STORE=/app/model_store
+      - MODEL_SERVICE_URL=http://model-service:8001
+      - REDIS_URL=redis://redis:6379
+      - BATCH_SIZE=8
+      - BATCH_TIMEOUT_MS=50
+    networks:
+      - ml-platform
+    depends_on:
+      redis:
+        condition: service_healthy
+      model-service:
+        condition: service_healthy
+    # ── GPU access (comment out if no NVIDIA GPU) ─────────────────────────
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 20s
+      timeout: 15s
+      retries: 5
+      start_period: 45s
+
+  # ── API Gateway ─────────────────────────────────────────────────────────────
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    container_name: ml-api-gateway
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - MODEL_SERVICE_URL=http://model-service:8001
+      - INFERENCE_SERVICE_URL=http://inference-service:8002
+      - REDIS_URL=redis://redis:6379
+      - RATE_LIMIT_PER_MINUTE=120
+    networks:
+      - ml-platform
+    depends_on:
+      model-service:
+        condition: service_healthy
+      inference-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # ── Frontend Dashboard ──────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ml-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    environment:
+      - GATEWAY_URL=http://localhost:8000
+    networks:
+      - ml-platform
+    depends_on:
+      - api-gateway
+
+  # ── Prometheus (Metrics Collection) ────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    container_name: ml-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    networks:
+      - ml-platform
+
+  # ── Grafana (Metrics Dashboard) ─────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: ml-grafana
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=mlplatform123
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana-dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana-datasources.yml:/etc/grafana/provisioning/datasources/ds.yml:ro
+    networks:
+      - ml-platform
+    depends_on:
+      - prometheus
+
+  # ── Redis Exporter (Prometheus metrics for Redis) ───────────────────────────
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.58.0
+    container_name: ml-redis-exporter
+    restart: unless-stopped
+    ports:
+      - "9121:9121"
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+    networks:
+      - ml-platform
+    depends_on:
+      - redis

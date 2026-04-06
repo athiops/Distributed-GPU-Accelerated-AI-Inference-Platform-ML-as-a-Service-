@@ -1,0 +1,147 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+#  HPA – API Gateway
+#  Scale based on CPU utilisation
+# ════════════════════════════════════════════════════════════════════════════════
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-gateway-hpa
+  namespace: ml-platform
+  labels:
+    app: api-gateway
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api-gateway
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 120
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+
+---
+# ════════════════════════════════════════════════════════════════════════════════
+#  HPA – GPU Inference Service
+#  Scale based on CPU + custom Redis queue-depth metric (via Keda or Prometheus)
+# ════════════════════════════════════════════════════════════════════════════════
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: inference-service-hpa
+  namespace: ml-platform
+  labels:
+    app: inference-service
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: inference-service
+  minReplicas: 1
+  maxReplicas: 8         # Bounded by physical GPU count in cluster
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    # NOTE: For GPU-aware scaling add KEDA ScaledObject (see keda-scaledobject.yaml)
+    # This HPA handles CPU-based scaling as a baseline.
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 15    # Fast scale-up for GPU bursts
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300   # Slow scale-down (GPU pods are expensive)
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 180
+
+---
+# ════════════════════════════════════════════════════════════════════════════════
+#  HPA – Model Service
+# ════════════════════════════════════════════════════════════════════════════════
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: model-service-hpa
+  namespace: ml-platform
+  labels:
+    app: model-service
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: model-service
+  minReplicas: 1
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 65
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 180
+
+---
+# ════════════════════════════════════════════════════════════════════════════════
+#  KEDA ScaledObject – Scale Inference Pods by Redis Queue Depth
+#  (Requires KEDA installed: https://keda.sh)
+# ════════════════════════════════════════════════════════════════════════════════
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: inference-queue-scaler
+  namespace: ml-platform
+spec:
+  scaleTargetRef:
+    name: inference-service
+  pollingInterval: 10          # Seconds between queue checks
+  cooldownPeriod: 60
+  minReplicaCount: 1
+  maxReplicaCount: 8
+  triggers:
+    - type: redis
+      metadata:
+        address: redis:6379
+        listName: inference:queue:p5   # Watch highest-priority queue
+        listLength: "5"                # 1 pod per 5 pending tasks
+    - type: redis
+      metadata:
+        address: redis:6379
+        listName: inference:queue:p4
+        listLength: "10"

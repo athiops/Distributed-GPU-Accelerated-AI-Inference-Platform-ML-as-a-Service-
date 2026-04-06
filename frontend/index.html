@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ML-as-a-Service | GPU Inference Platform</title>
+  <meta name="description" content="Distributed GPU-Accelerated AI Inference Platform — Upload models, run inference, monitor GPU usage in real time." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ── Canvas Background ── -->
+  <canvas id="bg-canvas"></canvas>
+
+  <!-- ── Top Navigation ── -->
+  <nav class="navbar" id="navbar">
+    <div class="nav-brand">
+      <div class="brand-icon">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+        </svg>
+      </div>
+      <span class="brand-text">ML<span class="brand-accent">Platform</span></span>
+    </div>
+    <div class="nav-links">
+      <button class="nav-btn active" data-tab="dashboard" id="nav-dashboard">Dashboard</button>
+      <button class="nav-btn" data-tab="models" id="nav-models">Models</button>
+      <button class="nav-btn" data-tab="inference" id="nav-inference">Inference</button>
+      <button class="nav-btn" data-tab="monitor" id="nav-monitor">Monitor</button>
+    </div>
+    <div class="nav-status" id="platform-status">
+      <span class="status-dot" id="status-dot"></span>
+      <span id="status-text">Connecting…</span>
+    </div>
+  </nav>
+
+  <!-- ── Main Content ── -->
+  <main class="main">
+
+    <!-- ═══════════════════════════════════════════
+         TAB: DASHBOARD
+    ═══════════════════════════════════════════ -->
+    <section class="tab-content active" id="tab-dashboard">
+      <div class="page-header">
+        <h1 class="page-title">GPU Inference Platform</h1>
+        <p class="page-subtitle">Distributed ML-as-a-Service · Powered by NVIDIA CUDA</p>
+      </div>
+
+      <!-- KPI Cards -->
+      <div class="kpi-grid">
+        <div class="kpi-card" id="kpi-models">
+          <div class="kpi-icon" style="background: linear-gradient(135deg, #6366f1, #8b5cf6);">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+          </div>
+          <div class="kpi-data">
+            <div class="kpi-value" id="kpi-model-count">—</div>
+            <div class="kpi-label">Deployed Models</div>
+          </div>
+        </div>
+
+        <div class="kpi-card" id="kpi-requests">
+          <div class="kpi-icon" style="background: linear-gradient(135deg, #06b6d4, #3b82f6);">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          </div>
+          <div class="kpi-data">
+            <div class="kpi-value" id="kpi-req-count">—</div>
+            <div class="kpi-label">Queue Depth</div>
+          </div>
+        </div>
+
+        <div class="kpi-card" id="kpi-gpu">
+          <div class="kpi-icon" style="background: linear-gradient(135deg, #10b981, #059669);">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
+          </div>
+          <div class="kpi-data">
+            <div class="kpi-value" id="kpi-gpu-mem">—</div>
+            <div class="kpi-label">GPU Memory Used</div>
+          </div>
+        </div>
+
+        <div class="kpi-card" id="kpi-latency">
+          <div class="kpi-icon" style="background: linear-gradient(135deg, #f59e0b, #ef4444);">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          </div>
+          <div class="kpi-data">
+            <div class="kpi-value" id="kpi-latency-val">—</div>
+            <div class="kpi-label">Avg Inference Latency</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Architecture Diagram -->
+      <div class="card architecture-card">
+        <h2 class="card-title">System Architecture</h2>
+        <div class="arch-diagram">
+          <div class="arch-node client">
+            <div class="arch-icon">👤</div>
+            <div class="arch-label">Client</div>
+          </div>
+          <div class="arch-arrow">→</div>
+          <div class="arch-node gateway">
+            <div class="arch-icon">🔀</div>
+            <div class="arch-label">API Gateway<br><small>:8000</small></div>
+          </div>
+          <div class="arch-branch">
+            <div class="arch-branch-top">
+              <div class="arch-arrow">→</div>
+              <div class="arch-node model">
+                <div class="arch-icon">📦</div>
+                <div class="arch-label">Model Service<br><small>:8001</small></div>
+              </div>
+            </div>
+            <div class="arch-branch-bottom">
+              <div class="arch-arrow">→</div>
+              <div class="arch-node redis">
+                <div class="arch-icon">⚡</div>
+                <div class="arch-label">Redis Queue<br><small>:6379</small></div>
+              </div>
+              <div class="arch-arrow">→</div>
+              <div class="arch-node gpu">
+                <div class="arch-icon">🎮</div>
+                <div class="arch-label">GPU Inference<br><small>:8002</small></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Services Health -->
+      <div class="card">
+        <h2 class="card-title">Service Health</h2>
+        <div class="health-grid" id="health-grid">
+          <div class="health-item loading">Connecting to services…</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════
+         TAB: MODELS
+    ═══════════════════════════════════════════ -->
+    <section class="tab-content" id="tab-models">
+      <div class="page-header">
+        <h1 class="page-title">Model Registry</h1>
+        <p class="page-subtitle">Upload, version, and manage your ML models</p>
+      </div>
+
+      <!-- Upload Card -->
+      <div class="card upload-card">
+        <h2 class="card-title">Upload Model</h2>
+        <div class="upload-zone" id="upload-zone">
+          <div class="upload-icon">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+          </div>
+          <p class="upload-text">Drop your model file here or <label for="file-input" class="upload-browse">browse</label></p>
+          <p class="upload-hint">.pt · .pth · .onnx · .pb — max 500MB</p>
+          <input type="file" id="file-input" accept=".pt,.pth,.onnx,.pb,.h5" class="hidden" />
+        </div>
+        <div class="upload-form" id="upload-form">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Model Name</label>
+              <input type="text" id="model-name" placeholder="e.g. resnet50-classifier" />
+            </div>
+            <div class="form-group">
+              <label>Version</label>
+              <input type="text" id="model-version" placeholder="1.0.0" value="1.0.0" />
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Description</label>
+            <input type="text" id="model-desc" placeholder="Short description of the model" />
+          </div>
+          <div class="form-group">
+            <label>Framework</label>
+            <select id="model-framework">
+              <option value="pytorch">PyTorch</option>
+              <option value="onnx">ONNX</option>
+              <option value="tensorflow">TensorFlow</option>
+            </select>
+          </div>
+          <button class="btn btn-primary" id="upload-btn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            Upload Model
+          </button>
+          <div class="upload-progress hidden" id="upload-progress">
+            <div class="progress-bar">
+              <div class="progress-fill" id="progress-fill"></div>
+            </div>
+            <p class="progress-text" id="progress-text">Uploading…</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Models List -->
+      <div class="card">
+        <div class="card-header-row">
+          <h2 class="card-title">Registered Models</h2>
+          <button class="btn btn-secondary" id="refresh-models-btn">↻ Refresh</button>
+        </div>
+        <div id="models-list">
+          <div class="empty-state">No models registered yet. Upload your first model above.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════
+         TAB: INFERENCE
+    ═══════════════════════════════════════════ -->
+    <section class="tab-content" id="tab-inference">
+      <div class="page-header">
+        <h1 class="page-title">Run Inference</h1>
+        <p class="page-subtitle">Submit images for GPU-accelerated classification</p>
+      </div>
+
+      <div class="inference-layout">
+        <!-- Input Panel -->
+        <div class="card infer-input-card">
+          <h2 class="card-title">Input</h2>
+          <div class="form-group">
+            <label>Select Model</label>
+            <select id="infer-model-select">
+              <option value="demo">demo (Built-in ResNet50)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Mode</label>
+            <div class="radio-group">
+              <label class="radio-label">
+                <input type="radio" name="infer-mode" value="sync" checked id="mode-sync" />
+                <span>Sync (immediate)</span>
+              </label>
+              <label class="radio-label">
+                <input type="radio" name="infer-mode" value="async" id="mode-async" />
+                <span>Async (queued)</span>
+              </label>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Image</label>
+            <div class="img-upload-zone" id="infer-upload-zone">
+              <div class="upload-icon small">📷</div>
+              <p>Drop image or <label for="infer-file-input" class="upload-browse">browse</label></p>
+              <input type="file" id="infer-file-input" accept="image/*" class="hidden" />
+            </div>
+            <div class="preview-container hidden" id="preview-container">
+              <img id="preview-img" alt="Selected image preview" src="" />
+              <button class="remove-btn" id="remove-img-btn">✕</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Priority (1–5)</label>
+            <input type="range" id="infer-priority" min="1" max="5" value="3" class="range-input" />
+            <div class="range-labels"><span>Low</span><span id="priority-val">3</span><span>High</span></div>
+          </div>
+          <button class="btn btn-primary btn-full" id="run-infer-btn">
+            ▶ Run Inference
+          </button>
+        </div>
+
+        <!-- Results Panel -->
+        <div class="card infer-results-card">
+          <h2 class="card-title">Results</h2>
+          <div id="infer-results">
+            <div class="empty-state">
+              <div style="font-size:3rem;margin-bottom:1rem">🎯</div>
+              <p>Submit an inference request to see predictions here.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Inference History -->
+      <div class="card">
+        <h2 class="card-title">Request History</h2>
+        <div id="infer-history">
+          <div class="empty-state">No requests yet.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════
+         TAB: MONITOR
+    ═══════════════════════════════════════════ -->
+    <section class="tab-content" id="tab-monitor">
+      <div class="page-header">
+        <h1 class="page-title">Platform Monitor</h1>
+        <p class="page-subtitle">Live GPU, queue, and service metrics</p>
+      </div>
+
+      <div class="monitor-grid">
+        <!-- GPU Stats -->
+        <div class="card">
+          <h2 class="card-title">GPU Status</h2>
+          <div id="gpu-stats">
+            <div class="loading-state">Fetching GPU data…</div>
+          </div>
+        </div>
+
+        <!-- Queue Depth -->
+        <div class="card">
+          <h2 class="card-title">Queue Depths</h2>
+          <div id="queue-stats">
+            <div class="loading-state">Fetching queue data…</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Throughput Chart -->
+      <div class="card">
+        <h2 class="card-title">Inference Throughput (Simulated)</h2>
+        <canvas id="throughput-chart" height="80"></canvas>
+      </div>
+
+      <!-- Log Stream -->
+      <div class="card">
+        <div class="card-header-row">
+          <h2 class="card-title">Live Request Log</h2>
+          <button class="btn btn-secondary" id="clear-log-btn">Clear</button>
+        </div>
+        <div class="log-stream" id="log-stream">
+          <div class="log-entry info">[system] Platform monitor started</div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ── Toast Container ── -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
